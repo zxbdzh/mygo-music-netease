@@ -372,6 +372,28 @@ test("guests can discover entries but private recommendations ask for sign-in", 
   assert.equal(calls, 1);
 });
 
+// Every card on Home needs artwork, and the decorative covers must differ or
+// the row reads as broken images.
+test("every home card carries distinct sized artwork", async () => {
+  const covers = Array.from({ length: 16 }, (_, i) => ({ id: i + 1, coverImgUrl: `https://p1.music.126.net/c${i}.jpg` }));
+  const { plugin } = await setup(async () => response({ code: 200, result: covers }));
+  const home = await plugin.home();
+  const links = home.sections.flatMap(section => section.links || []);
+  assert.equal(links.length, 6);
+  for (const link of links) {
+    assert.ok(link.imageUrl, `${link.title} 缺少封面`);
+    assert.equal(new URL(link.imageUrl).searchParams.get("param"), "{size}y{size}");
+  }
+  const images = links.map(link => link.imageUrl);
+  assert.equal(new Set(images).size, images.length, "卡片封面不应重复");
+  const stations = home.sections.flatMap(section => section.stations || []);
+  assert.equal(stations.length, 4);
+  for (const station of stations) {
+    assert.ok(station.imageUrl, `${station.name} 缺少封面`);
+    assert.ok(!images.includes(station.imageUrl), `${station.name} 的封面不应与卡片重复`);
+  }
+});
+
 // Daily songs and each FM mode use their own endpoint and account-aware details.
 test("daily, radar, personalized playlists and continuous FM map to host capabilities", async () => {
   const modes = [];

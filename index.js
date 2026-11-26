@@ -470,9 +470,9 @@ export async function home() {
     title: "发现音乐", subtitle: "网易云音乐 · 发现喜欢的音乐",
     sections: [
       { title: "我的音乐", links: [
-        { title: "最近一周", subtitle: "听歌排行", page: "record:week" },
-        { title: "所有时间", subtitle: "听歌排行", page: "record:all" },
-        { title: "音乐云盘", subtitle: "我的云盘歌曲", page: "cloud:0" },
+        { title: "最近一周", subtitle: "听歌排行", page: "record:week", imageUrl: discoveryCover(3) },
+        { title: "所有时间", subtitle: "听歌排行", page: "record:all", imageUrl: discoveryCover(4) },
+        { title: "音乐云盘", subtitle: "我的云盘歌曲", page: "cloud:0", imageUrl: discoveryCover(5) },
       ] },
       { title: "为你推荐", links: [
         { title: "每日推荐", subtitle: "每天更新，为你推荐好音乐", page: "daily", imageUrl: discoveryCover(0) },
@@ -1335,7 +1335,7 @@ function stationList() {
     // Older hosts replace source errors with a generic toast, so keep the
     // prerequisite visible on the station card as well.
     description: `${station.description}。需在网易云 App 中开启「个性化服务」。`,
-    imageUrl: discoveryCover(index + 3),
+    imageUrl: discoveryCover(index + 8),
   }));
 }
 
