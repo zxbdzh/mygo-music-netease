@@ -6,6 +6,10 @@
 - 结果：隔离修复index.js中响应已完成、外层调用尚未恢复时退出登录仍返回旧音源的竞态；所有共享请求等待者返回前检查epoch。index.test.mjs增加完成时退出和共享失败清理回归，14项相关检查通过；真实moejs合成回归原版失败、修复版通过。没有真实网络或账号操作，不涉及UA/风控，不声称修复460。
 - 发布：准备v0.1.13；只含独立竞态修复，PR26不包含在内。
 
+- [x] 2026-11-26 16:17 +0800 · DSH（Codeg / Windows）· 用户“你直接发版我测试下”：合并 0.3.3–0.3.5 三个提交发布 v0.3.5（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.5 ）。包含评论点赞与发表、歌单新建/改名/删除/排序、收藏歌单、收藏专辑/关注歌手/订阅播客、我收藏的专辑页、搜索建议、最近播放、播放开始上报、最高音质上限与外源「无损档不请求最高音质」。72 项测试、`node --check`、ZIP 五文件与版本核对通过，Release 资产 SHA-256 与本地 b912e777…74a2 一致。真实账号的写操作（收藏歌单、删除歌单、订阅）与播放上报是否被服务端接受均未验收；`savePlaylist` 未实现 checkToken 反作弊头，失败会返回服务端错误码。
+
+- [x] 2026-11-26 16:00 +0800 · DSH（Codeg / Windows）· 按“宿主能做插件没导出的都看下能不能实现”调研 459 个社区模块后分档：A 档 10 个可低风险实现并已全部完成；B 档 2 个（savePlaylist 需 checkToken、played 需 clientlog 域与 os=osx）已实现但待真机验证；C 档 likeEpisode 因社区无接口路径暂不做。改动见 14a8e21 与 0e2da41。
+
 - [x] 2026-11-26 15:50 +0800 · DSH（Codeg / Windows）· 用户“直接发版”：私人漫游列表加入心动模式（`HEART`），沿用已有 intelligence 接口取种子自「我喜欢的音乐」、游标推进与 200 首去重；新增两组用例覆盖参数、续播推进、空喜欢歌单、重复批次仅两次请求和未登录，原 3 项漫游断言同步为 4 项。59 项测试、`node --check`、ZIP 五文件清单通过；已推送 87e406a 并发布 v0.3.2（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.2 ），Release 资产 SHA-256 与本地 97b6c7c5…f50c8 一致。真实账号的心动续播与桌面界面未验收，未读取任何真实凭据。
 
 - [x] 2026-11-07 01:57 +0800 · Codex（ChatGPT 委派 / Mac mini）· 用户授权发布后已推送 93e9a4e 并公开发布 v0.1.1，附 netease-0.1.1.zip；语法检查、17 项测试及包清单核对通过，GitHub 资产 SHA-256 与本地一致。发布链接：https://github.com/sogud/mygo-music-netease/releases/tag/v0.1.1 。未操作 issues，汽水保持暂停；本机已安装的 local.2 与发布版功能代码一致，-460 仍仅缓解。
