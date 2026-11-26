@@ -915,7 +915,7 @@ const EXTERNAL_SCRIPT_TIMEOUT = 5000;
 const EXTERNAL_MUSIC_TIMEOUT = 8000;
 const EXTERNAL_SCRIPT_LIMIT = 262144;
 const EXTERNAL_UA = "lx-music-desktop/2.99.0";
-const EXTERNAL_QUALITY = { standard: "128k", high: "320k", lossless: "flac" };
+const EXTERNAL_QUALITY = { standard: "128k", high: "320k", lossless: "master" };
 const EXTERNAL_IPV4 = /^(?:0\.|10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/;
 const EXTERNAL_IPV6 = /^(?:\[::1?\]$|\[::ffff:|\[f[cd][0-9a-f]{0,2}:)/i;
 
@@ -984,6 +984,30 @@ async function externalLoadScript(script) {
   return entry;
 }
 
+async function externalVerify(url) {
+  // 接口回 code=200 不代表链接能播（实测见过给死链），取前 8KB 认容器再决定交给宿主。
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EXTERNAL_MUSIC_TIMEOUT);
+  try {
+    const reply = await fetch(url, { headers: { Range: "bytes=0-8191" }, signal: controller.signal });
+    if (!reply || (reply.status !== 200 && reply.status !== 206)) return null;
+    const bytes = new Uint8Array(await reply.arrayBuffer());
+    if (bytes.length < 8) return null;
+    const tag = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+    if (tag === "fLaC") return "flac";
+    if (tag === "OggS") return "ogg";
+    if (tag === "RIFF") return "wav";
+    if (String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]) === "ftyp") return "m4a";
+    // MP3 可能带 ID3 头，也可能直接是帧同步；两种都要认。
+    if (tag.startsWith("ID3") || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return "mp3";
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function externalResolve(entry, id, quality) {
   const target = new URL(entry.apiUrl.replace(/\/+$/, "") + "/music/url");
   target.searchParams.set("source", EXTERNAL_SOURCE);
@@ -1001,11 +1025,11 @@ async function externalResolve(entry, id, quality) {
     // 网易云 CDN 返回的是 http 直链；同主机换 https 仍可下载（实测 206），
     // 保持只接受 https 才能和官方路径的安全约定一致。
     const url = externalSafeURL(payload.url.replace(/^http:\/\//i, "https://"));
-    // 网易云的 320k/128k 是 MP3，不能沿用汽水的 m4a 回填；只有 flac 档才是无损。
-    const declared = typeof payload.quality === "string" ? payload.quality.toLowerCase() : "";
-    const flac = declared === "flac" || (declared === "" && quality === "lossless" && /\.flac$/i.test(new URL(url).pathname));
-    const type = flac ? "flac" : "mp3";
-    return { url, type, quality: flac ? "lossless" : quality === "standard" ? "standard" : "high" };
+    // 容器以字节为准：请求 master 时服务会按歌降档，响应里的标签并不可信。
+    const type = await externalVerify(url);
+    if (!type) throw new Error("unplayable");
+    const lossless = type === "flac";
+    return { url, type, quality: lossless ? "lossless" : quality === "standard" ? "standard" : "high" };
   } finally {
     clearTimeout(timer);
   }
