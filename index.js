@@ -1123,6 +1123,8 @@ function stationList() {
     { id: "DEFAULT", name: "私人漫游", description: "随心听，持续推荐你可能喜欢的歌曲" },
     { id: "FAMILIAR", name: "熟悉的歌", description: "回到熟悉的旋律" },
     { id: "EXPLORE", name: "新发现", description: "探索还没听过的音乐" },
+    // 心动模式走智能推荐接口并从喜欢歌单取种子，与上面三种电台模式不同。
+    { id: "HEART", name: "心动模式", description: "从喜欢的音乐出发，持续生成心动推荐" },
   ].map((station, index) => ({
     ...station,
     // Older hosts replace source errors with a generic toast, so keep the
@@ -1137,8 +1139,7 @@ export async function stations() {
   return stationList();
 }
 
-// Candidate only: HEART is deliberately absent from stationList until live
-// account and continuation checks pass. This uses NetEase's intelligence API,
+// Heart mode uses NetEase's intelligence API seeded from the liked playlist,
 // never the FAMILIAR radio or a local shuffle as a substitute.
 function checkHeartAccount(activeSession, generation) {
   if (activeSession !== session || generation !== epoch) {

@@ -365,7 +365,7 @@ test("guests can discover entries but private recommendations ask for sign-in", 
   const home = await plugin.home();
   assert.ok(home.sections.some(section => section.links?.some(link => link.page === "daily")));
   const stations = await plugin.stations();
-  assert.equal(stations.length, 3);
+  assert.equal(stations.length, 4);
   assert.ok(stations.every(station => station.description.includes("个性化服务")));
   for (const page of ["daily", "radar", "recommendations"]) await assert.rejects(plugin.browse({ page }), { code: "signIn" });
   await assert.rejects(plugin.stationNext({ id: "DEFAULT" }), { code: "signIn" });
@@ -406,6 +406,78 @@ test("daily, radar, personalized playlists and continuous FM map to host capabil
   }
   assert.deepEqual(modes, ["DEFAULT", "FAMILIAR", "EXPLORE", "DEFAULT"]);
   await assert.rejects(plugin.stationNext({ id: "unknown" }), { code: "unsupported" });
+});
+
+// Heart mode seeds from the account's liked playlist and must move the
+// service cursor forward instead of replaying the same batch.
+test("heart mode seeds from the liked playlist and advances its cursor", async () => {
+  const calls = [];
+  const { plugin } = await setup(async (url, init) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    if (url.includes("personalized/playlist")) return response({ code: 200, result: [] });
+    if (url.includes("user/playlist")) {
+      assert.equal(new URL(url).searchParams.get("uid"), "8");
+      return response({ code: 200, playlist: [{ id: 21, specialType: 5, creator: { userId: 8 } }], more: false });
+    }
+    if (url.includes("playlist/detail")) {
+      assert.equal(new URL(url).searchParams.get("id"), "21");
+      return response({ code: 200, playlist: { id: 21, specialType: 5, creator: { userId: 8 }, trackIds: [{ id: 100 }, { id: 101 }] } });
+    }
+    const { path, data } = decode(init.body);
+    if (path === "/api/playmode/intelligence/list") {
+      calls.push(data);
+      return response({ code: 200, data: [{ songInfo: song(calls.length === 1 ? 200 : 201) }] });
+    }
+    assert.equal(path, "/api/v3/song/detail");
+    return response({ code: 200, songs: JSON.parse(data.c).map(item => song(item.id)), privileges: [] });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+
+  const stations = await plugin.stations();
+  assert.ok(stations.some(station => station.id === "HEART"), "heart mode is listed for the host");
+  assert.deepEqual((await plugin.stationNext({ id: "HEART" })).map(track => track.id), ["200"]);
+  assert.deepEqual((await plugin.stationNext({ id: "HEART" })).map(track => track.id), ["201"]);
+  assert.deepEqual(calls.map(call => call.songId), ["100", "200"]);
+  assert.equal(calls[0].startMusicId, "100");
+  assert.equal(calls[0].playlistId, "21");
+  assert.equal(calls[0].type, "fromPlayOne");
+  assert.equal(calls[0].count, 1);
+});
+
+test("heart mode explains a missing liked playlist, a stalled batch and a signed-out listener", async () => {
+  const empty = await setup(async (url) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    if (url.includes("user/playlist")) return response({ code: 200, playlist: [{ id: 21, specialType: 5, creator: { userId: 8 } }], more: false });
+    if (url.includes("playlist/detail")) return response({ code: 200, playlist: { id: 21, specialType: 5, creator: { userId: 8 }, trackIds: [] } });
+    return response({ code: 500 });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  await assert.rejects(empty.plugin.stationNext({ id: "HEART" }), error => {
+    assert.equal(error.code, "unavailable");
+    assert.match(error.message, /喜欢一首歌/);
+    return true;
+  });
+
+  let batches = 0;
+  const stalled = await setup(async (url, init) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    if (url.includes("user/playlist")) return response({ code: 200, playlist: [{ id: 21, specialType: 5, creator: { userId: 8 } }], more: false });
+    if (url.includes("playlist/detail")) return response({ code: 200, playlist: { id: 21, specialType: 5, creator: { userId: 8 }, trackIds: [{ id: 100 }] } });
+    const { path, data } = decode(init.body);
+    if (path === "/api/playmode/intelligence/list") {
+      batches++;
+      return response({ code: 200, data: [{ songInfo: song(100) }] });
+    }
+    return response({ code: 200, songs: JSON.parse(data.c).map(item => song(item.id)), privileges: [] });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  assert.deepEqual((await stalled.plugin.stationNext({ id: "HEART" })).map(track => track.id), ["100"]);
+  await assert.rejects(stalled.plugin.stationNext({ id: "HEART" }), error => {
+    assert.equal(error.code, "unavailable");
+    assert.match(error.message, /新的心动推荐/);
+    return true;
+  });
+  assert.equal(batches, 2, "a repeated batch is not retried into the same cursor");
+
+  const guest = await setup(async () => response({ code: 200, profile: null }));
+  await assert.rejects(guest.plugin.stationNext({ id: "HEART" }), { code: "signIn" });
 });
 
 test("disabled personalization explains an empty radio batch and permits recovery", async () => {

@@ -41,7 +41,9 @@ https://github.com/sogud/mygo-music-netease/pull/6, commit
 `29c6cffd6990d527a3d9e46757824dc0f6903881` (AGPL-3.0-only), with
 current-session checks, podcast ID rejection, and conservative duplicate retry.
 
-The unexposed heart-mode candidate is adapted from `HeartMode` in
+Heart mode ("心动模式") is adapted from `HeartMode` in
 `internal/netease/radio.go` at the same preserved upstream commit. Its request
-uses NetEase's intelligence endpoint; live continuation and account validation
-remain pending, so the candidate is not listed in the plugin's navigation.
+uses NetEase's intelligence endpoint, seeded from the account's liked playlist;
+the plugin advances the service cursor and skips already-returned songs. Listed
+in the station list as of 2026-11-26, when the request, continuation and
+signed-out paths gained tests.
