@@ -41,6 +41,11 @@ https://github.com/sogud/mygo-music-netease/pull/6, commit
 `29c6cffd6990d527a3d9e46757824dc0f6903881` (AGPL-3.0-only), with
 current-session checks, podcast ID rejection, and conservative duplicate retry.
 
+Comment likes and new comments are this fork's additions on top of the upstream
+read-only pages. The thread id, the web like endpoint with its csrf token and
+the desktop publish endpoint follow the same paths the upstream client and the
+public NetEase API documentation use.
+
 Heart mode ("心动模式") is adapted from `HeartMode` in
 `internal/netease/radio.go` at the same preserved upstream commit. Its request
 uses NetEase's intelligence endpoint, seeded from the account's liked playlist;

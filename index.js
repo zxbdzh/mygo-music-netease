@@ -813,6 +813,42 @@ export async function comments({ trackId, offset = 0 }) {
   return { comments: state.items.slice(offset, offset + PAGE_SIZE).map(toComment), total: state.total, more: offset + PAGE_SIZE < state.items.length || state.more };
 }
 
+// 点赞沿用评论页的 web 会话与 csrf，发布评论走桌面接口。
+export async function likeComment({ trackId, commentId, on }) {
+  const identity = trackIdentity(trackId);
+  const comment = String(commentId ?? "");
+  if (!/^\d+$/.test(comment) || Number(comment) <= 0) throw new Error("无效的评论 ID");
+  const activeSession = currentSession();
+  const generation = epoch;
+  await requireAccount();
+  checkAccountSession(activeSession, generation);
+  const form = new URLSearchParams({ threadId: identity.thread, commentId: comment });
+  if (activeSession.cookies.__csrf) form.set("csrf_token", activeSession.cookies.__csrf);
+  await request(`/api/v1/comment/${on ? "like" : "unlike"}`, {}, {
+    session: activeSession, form: form.toString(), keepSession: true,
+  });
+  checkAccountSession(activeSession, generation);
+  // 点赞数变了，首屏热门评论不能继续用旧快照。
+  commentSnapshot = null;
+}
+
+export async function postComment({ trackId, text }) {
+  const identity = trackIdentity(trackId);
+  const content = String(text ?? "").trim();
+  if (!content) throw new Error("评论内容不能为空");
+  const activeSession = currentSession();
+  const generation = epoch;
+  await requireAccount();
+  checkAccountSession(activeSession, generation);
+  const data = await eapi("/api/resource/comments/add", { threadId: identity.thread, content }, {
+    session: activeSession, keepSession: true,
+  });
+  checkAccountSession(activeSession, generation);
+  if (!data.comment?.commentId) throw new Error("网易云未返回评论结果，请刷新后查看");
+  commentSnapshot = null;
+  return toComment(data.comment);
+}
+
 // Word-timed lyrics (yrc) are served only by the desktop endpoint, and only
 // to a signed-in listener: each line carries the span it is sung over, and
 // each word, a character for CJK, its own. The web endpoint never carries

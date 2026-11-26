@@ -1078,3 +1078,63 @@ test("external source stops VIP-restricted tracks from being greyed out", async 
     assert.deepEqual(result.tracks.map((t) => t.unavailable), [false, expected], enabled);
   }
 });
+
+// Likes stay on the web session with its csrf token; publishing goes through
+// the desktop endpoint. Both use the same thread id the comment page reads.
+test("comment likes carry the thread and csrf, and publishing uses the desktop path", async () => {
+  const likes = [];
+  const posts = [];
+  let hotCalls = 0;
+  const { plugin } = await setup(async (url, init) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    if (url.includes("resource/hotcomments")) {
+      hotCalls++;
+      return response({ code: 200, hotComments: [{ commentId: 11, content: "hot", user: { nickname: "A" }, likedCount: 5 }] });
+    }
+    if (url.includes("/api/v1/comment/")) {
+      likes.push({ url, form: new URLSearchParams(init.body) });
+      return response({ code: 200 });
+    }
+    if (url.includes("163.com/api/v1/resource/comments/")) return response({ code: 200, comments: [], more: false, total: 1 });
+    const { path, data } = decode(init.body);
+    assert.equal(path, "/api/resource/comments/add");
+    posts.push(data);
+    return response({ code: 200, comment: {
+      commentId: 99, content: data.content, user: { nickname: "Fixture" }, time: 1700000000000, likedCount: 0,
+    } });
+  }, { cookies: { MUSIC_U: "synthetic-session", __csrf: "fixture-csrf" }, profile: null });
+
+  await plugin.comments({ trackId: "1" });
+  assert.equal(hotCalls, 1);
+  await plugin.likeComment({ trackId: "1", commentId: "11", on: true });
+  assert.match(likes[0].url, /\/api\/v1\/comment\/like$/);
+  assert.equal(likes[0].form.get("threadId"), "R_SO_4_1");
+  assert.equal(likes[0].form.get("commentId"), "11");
+  assert.equal(likes[0].form.get("csrf_token"), "fixture-csrf");
+  await plugin.likeComment({ trackId: "1", commentId: "11", on: false });
+  assert.match(likes[1].url, /\/api\/v1\/comment\/unlike$/);
+  // A changed like count must not be served from the cached first page.
+  await plugin.comments({ trackId: "1" });
+  assert.equal(hotCalls, 2);
+
+  const posted = await plugin.postComment({ trackId: "program:7:8", text: "  好听  " });
+  assert.equal(posts[0].threadId, "A_DJ_1_7");
+  assert.equal(posts[0].content, "好听");
+  assert.equal(posted.id, "99");
+  assert.equal(posted.text, "好听");
+  await assert.rejects(plugin.postComment({ trackId: "1", text: "   " }), /不能为空/);
+  await assert.rejects(plugin.likeComment({ trackId: "1", commentId: "abc", on: true }), /评论 ID/);
+});
+
+test("comment likes and posts ask a guest to sign in before any write", async () => {
+  let wrote = 0;
+  const { plugin } = await setup(async (url) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: null });
+    wrote++;
+    return response({ code: 200 });
+  });
+  await assert.rejects(plugin.likeComment({ trackId: "1", commentId: "11", on: true }), { code: "signIn" });
+  await assert.rejects(plugin.postComment({ trackId: "1", text: "hi" }), { code: "signIn" });
+  assert.equal(wrote, 0);
+});
+
