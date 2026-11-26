@@ -1037,6 +1037,75 @@ test("the script is fetched once per URL", async () => {
   assert.equal(pulled, 1);
 });
 
+// 主脚本不支持 wy 时，同一个播放请求要自动改问备用脚本。
+test("the backup script answers when the primary cannot", async () => {
+  const backup = "https://backup.test/script";
+  const route = externalRoute({ script: EXTERNAL_TX_ONLY });
+  const { plugin } = await setup(async url => {
+    if (String(url) === backup) return scriptReply('const API_URL = "https://backup.test/api";\nconst MUSIC_QUALITY = {"wy":["flac"]};');
+    if (String(url).startsWith("https://backup.test/api/music/url")) return response({ code: 200, url: CDN + "/b.flac" });
+    if (String(url).startsWith(CDN)) return audioReply(FLAC_HEAD);
+    return route(url);
+  }, undefined, { ...externalSettings, externalSourceBackupScript: backup });
+  const audio = await plugin.stream({ id: "347230", quality: "lossless" });
+  assert.equal(audio.type, "flac");
+  assert.equal(audio.url, CDN + "/b.flac");
+});
+
+// 备用服务按 LX 官方插件约定用 POST + musicId；GET 会 404。
+test("post scripts are asked with a JSON body and musicId", async () => {
+  const backup = "https://backup.test/script";
+  let seen;
+  const { plugin } = await setup(async (url, init) => {
+    if (String(url) === backup) return scriptReply('const API_URL = "https://backup.test/api";\nconst handler = () => fetch(`${API_URL}/music/url`, { method: "POST", body: { musicId } });\nconst MUSIC_QUALITY = {"wy":["flac"]};');
+    if (String(url).startsWith("https://backup.test/api/music/url")) {
+      seen = { method: init.method, body: JSON.parse(init.body), key: init.headers["X-API-Key"] };
+      return response({ code: 200, url: CDN + "/c.flac" });
+    }
+    if (String(url).startsWith(CDN)) return audioReply(FLAC_HEAD);
+    throw new Error("unexpected " + url);
+  }, undefined, { ...externalSettings, externalSourceScript: "", externalSourceBackupScript: backup });
+  assert.equal((await plugin.stream({ id: "347230", quality: "lossless" })).type, "flac");
+  assert.equal(seen.method, "POST");
+  assert.deepEqual(seen.body, { source: "wy", musicId: "347230", quality: "master" });
+});
+
+// 主备都失败时只回落一次官方，不重复请求。
+test("both scripts failing falls back to the official endpoint once", async () => {
+  const backup = "https://backup.test/script";
+  let official = 0;
+  const { plugin } = await setup(async url => {
+    if (String(url).includes("interfacepc")) { official++; return officialReply(); }
+    if (String(url) === backup) return scriptReply('const API_URL = "https://backup.test/api";\nconst MUSIC_QUALITY = {"wy":["flac"]};');
+    return response({ code: 500 });
+  }, undefined, { ...externalSettings, externalSourceBackupScript: backup });
+  await plugin.stream({ id: "1", quality: "lossless" });
+  assert.equal(official, 1);
+});
+
+// 同一个地址恢复后应自动重拉，旧无时间戳缓存也不能永久遮住服务。
+test("expired failures and legacy script caches reload without changing URL", async () => {
+  let pulled = 0;
+  const route = externalRoute();
+  const { plugin, storage } = await setup(async url => {
+    if (String(url) === EXTERNAL_SCRIPT && ++pulled === 1) throw new Error('offline');
+    if (String(url).includes('interfacepc')) return officialReply();
+    return route(url);
+  }, undefined, externalSettings);
+  await plugin.stream({ id: '1', quality: 'lossless' });
+  const key = [...storage.keys()].find(key => key.startsWith('lx-script:'));
+  assert.ok(key);
+  assert.ok(storage.get(key).expiresAt - Date.now() <= 60000);
+  await plugin.stream({ id: '1', quality: 'lossless' });
+  assert.equal(pulled, 1);
+  storage.get(key).expiresAt = 0;
+  assert.equal((await plugin.stream({ id: '1', quality: 'lossless' })).type, 'flac');
+  assert.equal(pulled, 2);
+  storage.set(key, { v: 1, ok: false });
+  await plugin.stream({ id: '1', quality: 'lossless' });
+  assert.equal(pulled, 3);
+});
+
 test("a non-script response is rejected and falls back", async () => {
   const scriptUrl = EXTERNAL_API + "/music/url";
   let official = 0;

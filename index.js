@@ -1134,10 +1134,12 @@ function externalSourceOn() {
   return settingValue("externalSourceEnabled") === "true";
 }
 
-function externalScriptURL() {
-  if (settingValue("externalSourceEnabled") !== "true") return null;
-  const script = settingValue("externalSourceScript");
-  return /^https:\/\/\S+$/.test(script) ? script : null;
+function externalScriptURLs() {
+  if (settingValue("externalSourceEnabled") !== "true") return [];
+  // 主脚本失败时按顺序再试备用脚本；同一地址只保留一份，避免重复请求。
+  return [...new Set([settingValue("externalSourceScript"), settingValue("externalSourceBackupScript")])]
+    // 脚本地址只能走 HTTPS：官方路径才是唯一可信的回落目标。
+    .filter(script => /^https:\/\/\S+$/.test(script));
 }
 
 function externalSafeURL(value) {
@@ -1159,18 +1161,41 @@ function externalParseScript(text) {
   try { externalSafeURL(apiUrl); } catch { return null; }
   const key = /\bAPI_KEY\s*=\s*["'`]([^"'`\s]+)["'`]/.exec(text)?.[1] || "";
   // 平台名在对象字面量与 JSON.parse 两种写法里都带引号，一个正则即可判定。
-  return { apiUrl, key, supported: /["']wy["']\s*:/.test(text) };
+  // 两种 LX 服务协议：POST + musicId（如 c.wwwweb.top）与 GET + songId。
+  const protocol = /method:\s*["'`]POST["'`]/i.test(text) && /\bmusicId\b/.test(text) ? "post" : "get";
+  return { apiUrl, key, supported: /["']wy["']\s*:/.test(text), protocol };
 }
 
 function externalURLKey(script) {
   try { return new URL(script).searchParams.get("key") || ""; } catch { return ""; }
 }
 
+async function externalReadBytes(reply, limit) {
+  const reader = reply.body.getReader();
+  const bytes = new Uint8Array(limit);
+  let length = 0;
+  try {
+    while (length < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value.subarray(0, limit - length);
+      bytes.set(chunk, length);
+      length += chunk.length;
+    }
+    return bytes.subarray(0, length);
+  } finally {
+    // 不信任服务一定遵守 Range 或 Content-Length，读取足够数据即停止。
+    try { await reader.cancel(); } finally { reader.releaseLock(); }
+  }
+}
+
 async function externalLoadScript(script) {
   // 缓存键含脚本地址：换地址（含换 key）即换键，自然会重新拉取。
   const cacheKey = EXTERNAL_CACHE + host.crypto.md5(script);
-  const cached = host.storage.get(cacheKey);
-  if (cached && cached.v === 1) return cached;
+  let cached;
+  try { cached = host.storage.get(cacheKey); } catch { /* 缓存故障时重新拉取。 */ }
+  // 旧缓存没有期限，不能把一次断网永久保存为失败。
+  if (cached?.v === 1 && Number.isFinite(cached.expiresAt) && cached.expiresAt > Date.now()) return cached;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), EXTERNAL_SCRIPT_TIMEOUT);
   let entry;
@@ -1180,17 +1205,21 @@ async function externalLoadScript(script) {
       headers: { "User-Agent": EXTERNAL_UA },
     });
     if (!reply || reply.status !== 200) throw new Error("script status");
-    const parsed = externalParseScript(await reply.text());
+    const bytes = reply.body?.getReader ? await externalReadBytes(reply, EXTERNAL_SCRIPT_LIMIT + 1) : null;
+    const text = bytes ? (bytes.length > EXTERNAL_SCRIPT_LIMIT ? '' : new TextDecoder().decode(bytes)) : await reply.text();
+    const parsed = externalParseScript(text);
     entry = parsed
-      ? { v: 1, ok: true, apiUrl: parsed.apiUrl, key: parsed.key || externalURLKey(script), supported: parsed.supported }
+      ? { v: 1, ok: true, apiUrl: parsed.apiUrl, key: parsed.key || externalURLKey(script), supported: parsed.supported, protocol: parsed.protocol }
       : { v: 1, ok: false, reason: "script" };
   } catch (error) {
     // 失败也缓存，避免每首歌重复拉同一份坏脚本。
-    entry = { v: 1, ok: false, reason: error && error.name === "AbortError" ? "timeout" : "script" };
+    entry = { v: 1, ok: false, reason: error && error.name === "AbortError" ? "timeout" : "script", transient: true };
   } finally {
     clearTimeout(timer);
   }
-  host.storage.set(cacheKey, entry);
+  const ttl = entry.ok && entry.supported ? 86400000 : entry.transient ? 60000 : 600000;
+  entry.expiresAt = Date.now() + ttl;
+  try { host.storage.set(cacheKey, entry); } catch { /* 缓存失败不能丢弃已解析音源。 */ }
   return entry;
 }
 
@@ -1199,9 +1228,10 @@ async function externalVerify(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), EXTERNAL_MUSIC_TIMEOUT);
   try {
-    const reply = await fetch(url, { headers: { Range: "bytes=0-8191" }, signal: controller.signal });
+    const reply = await fetch(url, { headers: { Range: "bytes=0-8191" }, redirect: "error", signal: controller.signal });
     if (!reply || (reply.status !== 200 && reply.status !== 206)) return null;
-    const bytes = new Uint8Array(await reply.arrayBuffer());
+    // 宿主支持响应流；即使 CDN 忽略 Range，也取消余下音频以免整曲预下载。
+    const bytes = reply.body?.getReader ? await externalReadBytes(reply, 12) : new Uint8Array(await reply.arrayBuffer());
     if (bytes.length < 8) return null;
     const tag = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
     if (tag === "fLaC") return "flac";
@@ -1220,15 +1250,21 @@ async function externalVerify(url) {
 
 async function externalResolve(entry, id, quality) {
   const target = new URL(entry.apiUrl.replace(/\/+$/, "") + "/music/url");
-  target.searchParams.set("source", EXTERNAL_SOURCE);
-  target.searchParams.set("songId", id);
-  target.searchParams.set("quality", externalQuality(quality));
   const headers = { "User-Agent": EXTERNAL_UA, "Content-Type": "application/json" };
   if (entry.key) headers["X-API-Key"] = entry.key;
+  let init = { method: "GET", headers };
+  if (entry.protocol === "post") {
+    // 备用服务按 LX 官方插件约定：POST + musicId，GET 会 404。
+    init = { method: "POST", headers, body: JSON.stringify({ source: EXTERNAL_SOURCE, musicId: id, quality: externalQuality(quality) }) };
+  } else {
+    target.searchParams.set("source", EXTERNAL_SOURCE);
+    target.searchParams.set("songId", id);
+    target.searchParams.set("quality", externalQuality(quality));
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), EXTERNAL_MUSIC_TIMEOUT);
   try {
-    const reply = await fetch(target.href, { method: "GET", headers, signal: controller.signal });
+    const reply = await fetch(target.href, { ...init, signal: controller.signal });
     if (!reply || reply.status !== 200) throw new Error("music status");
     const payload = await reply.json();
     if (!payload || payload.code !== 200 || typeof payload.url !== "string" || !payload.url) throw new Error("music payload");
@@ -1246,19 +1282,21 @@ async function externalResolve(entry, id, quality) {
 }
 
 async function externalStream(id, quality) {
-  const script = externalScriptURL();
-  if (!script) return null;
-  try {
-    const entry = await externalLoadScript(script);
-    if (!entry.ok) throw Object.assign(new Error("script"), { reason: entry.reason });
-    if (!entry.supported) throw Object.assign(new Error("unsupported"), { reason: "unsupported" });
-    return await externalResolve(entry, id, quality);
-  } catch (error) {
-    // 宿主只给了 console；只记录归一化原因，绝不带出 key、脚本地址或带签名的直链。
-    const reason = (error && error.reason) || (error && error.name === "AbortError" ? "timeout" : "failure");
-    try { console.warn(`external source fallback: ${reason}`); } catch { /* 日志不是播放前提。 */ }
-    return null;
+  const scripts = externalScriptURLs();
+  if (!scripts.length) return null;
+  for (const script of scripts) {
+    try {
+      const entry = await externalLoadScript(script);
+      if (!entry.ok) throw Object.assign(new Error("script"), { reason: entry.reason });
+      if (!entry.supported) throw Object.assign(new Error("unsupported"), { reason: "unsupported" });
+      return await externalResolve(entry, id, quality);
+    } catch (error) {
+      // 宿主只给了 console；只记录归一化原因，绝不带出 key、脚本地址或带签名的直链。
+      const reason = (error && error.reason) || (error && error.name === "AbortError" ? "timeout" : "failure");
+      try { console.warn(`external source fallback: ${reason}`); } catch { /* 日志不是播放前提。 */ }
+    }
   }
+  return null;
 }
 
 export async function stream({ id, quality = "high" }) {
