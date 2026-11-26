@@ -995,3 +995,14 @@ test("an http link from the source is upgraded to https", async () => {
   assert.equal(audio.url, "https://m801.music.126.net/d.flac");
   assert.equal(seen, "https://m801.music.126.net/d.flac");
 });
+
+test("external source stops VIP-restricted tracks from being greyed out", async () => {
+  for (const [enabled, expected] of [["false", true], ["true", false]]) {
+    const { plugin } = await setup(async (url) => url.includes("cloudsearch")
+      ? response({ code: 200, result: { songs: [song(1), song(2)], songCount: 2 } })
+      : response({ code: 200, songs: [song(1), song(2)], privileges: [{ id: 1, st: 0, pl: 320000 }, { id: 2, st: 0, pl: 0 }] }),
+      undefined, { externalSourceEnabled: enabled });
+    const result = await plugin.search({ query: "song" });
+    assert.deepEqual(result.tracks.map((t) => t.unavailable), [false, expected], enabled);
+  }
+});

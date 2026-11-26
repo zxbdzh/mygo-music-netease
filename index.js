@@ -249,7 +249,9 @@ function toTrack(track) {
     artists: (track.ar || track.artists || []).map(toArtist),
     album: toAlbum(track.al || track.album), duration: track.dt || track.duration || 0,
     url: `${SITE}/song?id=${track.id}`,
-    unavailable: privilege ? privilege.st < 0 || privilege.pl <= 0 : track.fee === 1 || track.fee === 4,
+    // 外部音源不看会员权限。若仍按 privilege 打标记，宿主会把整行置灰并在播放前拦住，
+    // 开关打开后这些歌其实能放，所以这里一律放行。
+    unavailable: externalSourceOn() ? false : privilege ? privilege.st < 0 || privilege.pl <= 0 : track.fee === 1 || track.fee === 4,
   };
 }
 
@@ -922,6 +924,10 @@ const EXTERNAL_IPV6 = /^(?:\[::1?\]$|\[::ffff:|\[f[cd][0-9a-f]{0,2}:)/i;
 function externalSetting(key) {
   // 旧宿主没有 settings API 时必须视为未配置，播放不能被配置读取卡住。
   try { return String(host.setting(key) ?? ""); } catch { return ""; }
+}
+
+function externalSourceOn() {
+  return externalSetting("externalSourceEnabled") === "true";
 }
 
 function externalScriptURL() {
