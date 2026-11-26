@@ -7,7 +7,7 @@ const response = (body, cookies = []) => ({
   ok: true, status: 200, json: async () => body, headers: { getSetCookie: () => cookies },
 });
 
-async function setup(handler, savedSession) {
+async function setup(handler, savedSession, settings = {}) {
   const storage = new Map(savedSession ? [["session", structuredClone(savedSession)]] : []);
   const prompts = [];
   const storageReads = [];
@@ -21,6 +21,7 @@ async function setup(handler, savedSession) {
       },
     },
     signInPrompt: (prompt) => prompts.push(prompt),
+    setting: (key) => settings[key],
   };
   globalThis.fetch = handler;
   const plugin = await import(`./index.js?test=${++sequence}`);
@@ -865,4 +866,112 @@ test("eapi requests pair the desktop User-Agent with the PC payload and host", a
   assert.ok(seenHeaders["User-Agent"].includes("Windows NT 10.0"));
   assert.ok(seenHeaders["User-Agent"].includes(`NeteaseMusicDesktop/${seenPayload.data.header.appver}`));
   assert.ok(!seenHeaders["User-Agent"].includes("iPhone"));
+});
+
+// ---- 外部 LX 音源 ----
+// 脚本与接口用保留域名；真实域名只出现在用户设置里。
+const EXTERNAL_SCRIPT = "https://audio-source.test/api/script/lx?key=fixture-key";
+const EXTERNAL_API = "https://audio-source.test/api";
+const EXTERNAL_WY = 'const API_URL = "https://audio-source.test/api";\nconst API_KEY = "fixture-key";\nconst MUSIC_QUALITY = {"wy":["128k","320k","flac"]};';
+const EXTERNAL_TX_ONLY = 'const API_URL = "https://audio-source.test/api";\nconst MUSIC_QUALITY = {"tx":["128k","320k","flac"]};';
+const externalSettings = { externalSourceEnabled: "true", externalSourceScript: EXTERNAL_SCRIPT };
+const scriptReply = (body) => ({ ok: true, status: 200, text: async () => body, headers: { getSetCookie: () => [] } });
+const officialReply = () => response({
+  code: 200,
+  data: [{ id: 1, code: 200, url: "https://m1.music.126.net/song.mp3", type: "mp3", level: "exhigh", size: 10, freeTrialInfo: null }],
+});
+
+test("external source returns the LX link and skips the official endpoint", async () => {
+  const calls = [];
+  const { plugin } = await setup(async (url) => {
+    calls.push(String(url));
+    if (String(url) === EXTERNAL_SCRIPT) return scriptReply(EXTERNAL_WY);
+    if (String(url).startsWith(EXTERNAL_API + "/music/url")) return response({ code: 200, url: "https://m801.music.126.net/a.flac" });
+    throw new Error("unexpected " + url);
+  }, undefined, externalSettings);
+  const audio = await plugin.stream({ id: "347230", quality: "lossless" });
+  assert.equal(audio.type, "flac");
+  assert.equal(audio.quality, "lossless");
+  assert.equal(audio.url, "https://m801.music.126.net/a.flac");
+  assert.equal(calls.some((u) => u.includes("interfacepc")), false);
+});
+
+test("script without wy falls back to the official endpoint", async () => {
+  let official = 0;
+  const { plugin } = await setup(async (url) => {
+    if (String(url) === EXTERNAL_SCRIPT) return scriptReply(EXTERNAL_TX_ONLY);
+    official++;
+    return officialReply();
+  }, undefined, externalSettings);
+  const audio = await plugin.stream({ id: "1", quality: "high" });
+  assert.equal(official, 1);
+  assert.equal(audio.type, "mp3");
+});
+
+test("320k is reported as mp3, never m4a", async () => {
+  const { plugin } = await setup(async (url) => {
+    if (String(url) === EXTERNAL_SCRIPT) return scriptReply(EXTERNAL_WY);
+    return response({ code: 200, url: "https://m801.music.126.net/b.mp3" });
+  }, undefined, externalSettings);
+  const audio = await plugin.stream({ id: "347230", quality: "high" });
+  assert.equal(audio.type, "mp3");
+  assert.equal(audio.quality, "high");
+});
+
+test("a failing source falls back without touching the session", async () => {
+  const session = { cookies: { MUSIC_U: "synthetic-session" }, profile: null };
+  const { plugin, storage } = await setup(async (url) => {
+    if (String(url) === EXTERNAL_SCRIPT) return scriptReply(EXTERNAL_WY);
+    if (String(url).startsWith(EXTERNAL_API + "/music/url")) return { ok: false, status: 500, json: async () => ({}) };
+    return officialReply();
+  }, session, externalSettings);
+  const before = structuredClone(storage.get("session"));
+  await plugin.stream({ id: "1", quality: "lossless" });
+  assert.deepEqual(storage.get("session"), before);
+});
+
+test("the script is fetched once per URL", async () => {
+  let pulled = 0;
+  const { plugin } = await setup(async (url) => {
+    if (String(url) === EXTERNAL_SCRIPT) { pulled++; return scriptReply(EXTERNAL_WY); }
+    return response({ code: 200, url: "https://m801.music.126.net/c.flac" });
+  }, undefined, externalSettings);
+  await plugin.stream({ id: "1", quality: "lossless" });
+  await plugin.stream({ id: "2", quality: "lossless" });
+  assert.equal(pulled, 1);
+});
+
+test("a non-script response is rejected and falls back", async () => {
+  const scriptUrl = EXTERNAL_API + "/music/url";
+  let official = 0;
+  const { plugin } = await setup(async (url) => {
+    // 填成直连接口时，返回的是 JSON 而不是脚本文本。
+    if (String(url) === scriptUrl) return response({ code: 200, url: "https://m801.music.126.net/x.flac" });
+    if (String(url).includes("interfacepc")) official++;
+    return officialReply();
+  }, undefined, { externalSourceEnabled: "true", externalSourceScript: scriptUrl });
+  await plugin.stream({ id: "1", quality: "high" });
+  assert.equal(official, 1);
+});
+
+test("an internal address from the source is refused", async () => {
+  let official = 0;
+  const { plugin } = await setup(async (url) => {
+    if (String(url) === EXTERNAL_SCRIPT) return scriptReply(EXTERNAL_WY);
+    if (String(url).startsWith(EXTERNAL_API + "/music/url")) return response({ code: 200, url: "http://127.0.0.1:1/x.mp3" });
+    official++;
+    return officialReply();
+  }, undefined, externalSettings);
+  await plugin.stream({ id: "1", quality: "high" });
+  assert.equal(official, 1);
+});
+
+test("an http link from the source is upgraded to https", async () => {
+  const { plugin } = await setup(async (url) => {
+    if (String(url) === EXTERNAL_SCRIPT) return scriptReply(EXTERNAL_WY);
+    return response({ code: 200, url: "http://m801.music.126.net/d.flac" });
+  }, undefined, externalSettings);
+  const audio = await plugin.stream({ id: "347230", quality: "lossless" });
+  assert.equal(audio.url, "https://m801.music.126.net/d.flac");
+  assert.equal(audio.type, "flac");
 });

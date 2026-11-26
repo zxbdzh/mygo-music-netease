@@ -906,9 +906,132 @@ export async function lyrics({ id }) {
   return { lrc: "", translation };
 }
 
+// ---- 外部 LX 音源（可选） ----
+// 只读取脚本里声明的接口，绝不执行脚本：第三方代码一旦运行就能拿到 host 与登录态。
+// 任一环节失败都静默回落官方取流，不修改 session、不写 storage（脚本缓存除外）。
+const EXTERNAL_SOURCE = "wy";
+const EXTERNAL_CACHE = "lx-script:";
+const EXTERNAL_SCRIPT_TIMEOUT = 5000;
+const EXTERNAL_MUSIC_TIMEOUT = 8000;
+const EXTERNAL_SCRIPT_LIMIT = 262144;
+const EXTERNAL_UA = "lx-music-desktop/2.99.0";
+const EXTERNAL_QUALITY = { standard: "128k", high: "320k", lossless: "flac" };
+const EXTERNAL_IPV4 = /^(?:0\.|10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/;
+const EXTERNAL_IPV6 = /^(?:\[::1?\]$|\[::ffff:|\[f[cd][0-9a-f]{0,2}:)/i;
+
+function externalSetting(key) {
+  // 旧宿主没有 settings API 时必须视为未配置，播放不能被配置读取卡住。
+  try { return String(host.setting(key) ?? ""); } catch { return ""; }
+}
+
+function externalScriptURL() {
+  if (externalSetting("externalSourceEnabled") !== "true") return null;
+  const script = externalSetting("externalSourceScript");
+  return /^https:\/\/\S+$/.test(script) ? script : null;
+}
+
+function externalSafeURL(value) {
+  // 宿主会直接 GET 这个地址，放行内网地址等于把 SSRF 送进本机。
+  if (typeof value !== "string" || !value || value.length > 16384) throw new Error("unsafe url");
+  let url;
+  try { url = new URL(value); } catch { throw new Error("unsafe url"); }
+  if (url.protocol !== "https:" || url.username || url.password) throw new Error("unsafe url");
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) throw new Error("unsafe url");
+  if (EXTERNAL_IPV4.test(hostname) || EXTERNAL_IPV6.test(hostname)) throw new Error("unsafe url");
+  return value;
+}
+
+function externalParseScript(text) {
+  if (typeof text !== "string" || !text || text.length > EXTERNAL_SCRIPT_LIMIT) return null;
+  const apiUrl = /\bAPI_URL\s*=\s*["'`](https?:\/\/[^"'`\s]+)["'`]/.exec(text)?.[1];
+  if (!apiUrl) return null;
+  try { externalSafeURL(apiUrl); } catch { return null; }
+  const key = /\bAPI_KEY\s*=\s*["'`]([^"'`\s]+)["'`]/.exec(text)?.[1] || "";
+  // 平台名在对象字面量与 JSON.parse 两种写法里都带引号，一个正则即可判定。
+  return { apiUrl, key, supported: /["']wy["']\s*:/.test(text) };
+}
+
+function externalURLKey(script) {
+  try { return new URL(script).searchParams.get("key") || ""; } catch { return ""; }
+}
+
+async function externalLoadScript(script) {
+  // 缓存键含脚本地址：换地址（含换 key）即换键，自然会重新拉取。
+  const cacheKey = EXTERNAL_CACHE + host.crypto.md5(script);
+  const cached = host.storage.get(cacheKey);
+  if (cached && cached.v === 1) return cached;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EXTERNAL_SCRIPT_TIMEOUT);
+  let entry;
+  try {
+    const reply = await fetch(script, {
+      method: "GET", redirect: "error", signal: controller.signal,
+      headers: { "User-Agent": EXTERNAL_UA },
+    });
+    if (!reply || reply.status !== 200) throw new Error("script status");
+    const parsed = externalParseScript(await reply.text());
+    entry = parsed
+      ? { v: 1, ok: true, apiUrl: parsed.apiUrl, key: parsed.key || externalURLKey(script), supported: parsed.supported }
+      : { v: 1, ok: false, reason: "script" };
+  } catch (error) {
+    // 失败也缓存，避免每首歌重复拉同一份坏脚本。
+    entry = { v: 1, ok: false, reason: error && error.name === "AbortError" ? "timeout" : "script" };
+  } finally {
+    clearTimeout(timer);
+  }
+  host.storage.set(cacheKey, entry);
+  return entry;
+}
+
+async function externalResolve(entry, id, quality) {
+  const target = new URL(entry.apiUrl.replace(/\/+$/, "") + "/music/url");
+  target.searchParams.set("source", EXTERNAL_SOURCE);
+  target.searchParams.set("songId", id);
+  target.searchParams.set("quality", EXTERNAL_QUALITY[quality] || EXTERNAL_QUALITY.high);
+  const headers = { "User-Agent": EXTERNAL_UA, "Content-Type": "application/json" };
+  if (entry.key) headers["X-API-Key"] = entry.key;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EXTERNAL_MUSIC_TIMEOUT);
+  try {
+    const reply = await fetch(target.href, { method: "GET", headers, signal: controller.signal });
+    if (!reply || reply.status !== 200) throw new Error("music status");
+    const payload = await reply.json();
+    if (!payload || payload.code !== 200 || typeof payload.url !== "string" || !payload.url) throw new Error("music payload");
+    // 网易云 CDN 返回的是 http 直链；同主机换 https 仍可下载（实测 206），
+    // 保持只接受 https 才能和官方路径的安全约定一致。
+    const url = externalSafeURL(payload.url.replace(/^http:\/\//i, "https://"));
+    // 网易云的 320k/128k 是 MP3，不能沿用汽水的 m4a 回填；只有 flac 档才是无损。
+    const declared = typeof payload.quality === "string" ? payload.quality.toLowerCase() : "";
+    const flac = declared === "flac" || (declared === "" && quality === "lossless" && /\.flac$/i.test(new URL(url).pathname));
+    const type = flac ? "flac" : "mp3";
+    return { url, type, quality: flac ? "lossless" : quality === "standard" ? "standard" : "high" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function externalStream(id, quality) {
+  const script = externalScriptURL();
+  if (!script) return null;
+  try {
+    const entry = await externalLoadScript(script);
+    if (!entry.ok) throw Object.assign(new Error("script"), { reason: entry.reason });
+    if (!entry.supported) throw Object.assign(new Error("unsupported"), { reason: "unsupported" });
+    return await externalResolve(entry, id, quality);
+  } catch (error) {
+    // 宿主只给了 console；只记录归一化原因，绝不带出 key、脚本地址或带签名的直链。
+    const reason = (error && error.reason) || (error && error.name === "AbortError" ? "timeout" : "failure");
+    try { console.warn(`external source fallback: ${reason}`); } catch { /* 日志不是播放前提。 */ }
+    return null;
+  }
+}
+
 export async function stream({ id, quality = "high" }) {
   id = trackIdentity(id).audio;
   if (!id) throw fail("unavailable", "该播客节目没有可播放的音频");
+  const external = await externalStream(id, quality);
+  if (external) return external;
   const generation = epoch;
   const key = `${generation}:${id}:${quality}`;
   const pending = pendingStreams.get(key) || loadStream(id, quality, generation);
