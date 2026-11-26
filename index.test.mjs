@@ -1224,21 +1224,34 @@ test("album, artist and show subscriptions use their own payload fields", async 
   assert.equal(calls[5].form.get("csrf_token"), "fixture-csrf");
 });
 
-test("saved albums page maps the collection and reports more", async () => {
-  const queried = [];
-  const { plugin } = await setup(async (url) => {
-    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
-    const query = new URL(url).searchParams;
-    queried.push(query);
-    return response({ code: 200, hasMore: true, albums: [{ id: 6, name: "Album", picUrl: "https://p1.music.126.net/a.jpg" }] });
-  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+// The plain GET only answers an empty shell, so the list is a form POST, and
+// the service has answered with the array at either level.
+test("saved albums posts a form and reads the list from either shape", async () => {
+  const shapes = [
+    { code: 200, hasMore: true, albums: [{ id: 6, name: "Album", picUrl: "https://p1.music.126.net/a.jpg" }] },
+    { code: 200, data: { albums: [{ id: 7, name: "Album" }], hasMore: false } },
+  ];
+  for (const body of shapes) {
+    const sent = [];
+    const { plugin } = await setup(async (url, init) => {
+      if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+      sent.push(new URLSearchParams(init.body));
+      return response(body);
+    }, { cookies: { MUSIC_U: "synthetic-session", __csrf: "fixture-csrf" }, profile: null });
 
-  const page = await plugin.savedAlbums({ offset: 30 });
-  assert.equal(page.albums[0].id, "6");
-  assert.equal(page.more, true);
-  assert.equal(queried[0].get("offset"), "30");
-  assert.equal(queried[0].get("limit"), "30");
-  assert.equal(queried[0].get("total"), "true");
+    const page = await plugin.savedAlbums({ offset: 30 });
+    assert.equal(page.albums.length, 1);
+    assert.equal(sent[0].get("offset"), "30");
+    assert.equal(sent[0].get("limit"), "30");
+    assert.equal(sent[0].get("total"), "true");
+    assert.equal(sent[0].get("csrf_token"), "fixture-csrf");
+    assert.equal(page.more, body.hasMore ?? body.data.hasMore);
+  }
+
+  const { plugin: empty } = await setup(async (url) => url.includes("account/get")
+    ? response({ code: 200, profile: { userId: 8, nickname: "Fixture" } })
+    : response({ code: 200, unexpected: 1 }), { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  await assert.rejects(empty.savedAlbums({ offset: 0 }), /响应字段/);
 
   const { plugin: guest } = await setup(async () => response({ code: 200, profile: null }));
   await assert.rejects(guest.savedAlbums({ offset: 0 }), { code: "signIn" });

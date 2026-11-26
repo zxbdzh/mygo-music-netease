@@ -879,12 +879,21 @@ export async function savedAlbums({ offset = 0 } = {}) {
   const generation = epoch;
   await requireAccount();
   checkAccountSession(activeSession, generation);
-  const data = await request("/api/album/sublist", { limit: PAGE_SIZE, offset: pageOffset(offset), total: "true" }, {
-    session: activeSession, keepSession: true,
+  // 和 weapi 版一样按表单提交：GET 只回 code=200 的空壳，不带列表。
+  const form = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(pageOffset(offset)), total: "true" });
+  if (activeSession.cookies.__csrf) form.set("csrf_token", activeSession.cookies.__csrf);
+  const data = await request("/api/album/sublist", {}, {
+    session: activeSession, form: form.toString(), keepSession: true,
   });
   checkAccountSession(activeSession, generation);
-  if (!Array.isArray(data.albums)) throw new Error("网易云未返回有效的专辑收藏");
-  return { albums: data.albums.map(toAlbum), more: !!data.hasMore };
+  // 服务端在不同版本里把列表放在顶层或 data 下，两种都要认。
+  const albums = [data.albums, data.data, data.data?.albums].find(Array.isArray);
+  if (!albums) {
+    // 只带字段名，便于定位而不泄露内容。
+    throw new Error(`网易云未返回有效的专辑收藏（响应字段：${Object.keys(data).join("、") || "空"}）`);
+  }
+  const more = data.hasMore ?? data.more ?? data.data?.hasMore;
+  return { albums: albums.map(toAlbum), more: !!more };
 }
 
 export async function savePlaylist({ id, on }) {
