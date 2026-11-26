@@ -1270,6 +1270,79 @@ test("recent playback uses the weekly record list without a page wrapper", async
   await assert.rejects(guest.recent(), { code: "signIn" });
 });
 
+// The ceiling only lowers what the player asks for; it never raises a lower ask.
+test("the quality ceiling lowers the player's request and leaves a lower one alone", async () => {
+  const levels = [];
+  const { plugin } = await setup(async (url, init) => {
+    const { path, data } = decode(init.body);
+    assert.equal(path, "/api/song/enhance/player/url/v1");
+    levels.push(data.level);
+    return response({ code: 200, data: [{ id: Number(data.ids && JSON.parse(data.ids)[0]), code: 200, url: "https://m1.music.126.net/a.mp3", type: "mp3", freeTrialInfo: null }] });
+  }, undefined, { qualityCeiling: "high" });
+  await plugin.stream({ id: "1", quality: "lossless" });
+  await plugin.stream({ id: "2", quality: "standard" });
+  assert.deepEqual(levels, ["exhigh", "standard"]);
+});
+
+test("an unset ceiling keeps the player's own quality", async () => {
+  const levels = [];
+  const { plugin } = await setup(async (url, init) => {
+    levels.push(decode(init.body).data.level);
+    return response({ code: 200, data: [{ id: 1, code: 200, url: "https://m1.music.126.net/a.flac", type: "flac", level: "lossless", freeTrialInfo: null }] });
+  });
+  await plugin.stream({ id: "1", quality: "lossless" });
+  assert.deepEqual(levels, ["lossless"]);
+});
+
+test("the master switch asks the external source for plain lossless instead", async () => {
+  let asked = "";
+  const route = externalRoute({ onRequest: (u) => { if (u.includes("/music/url")) asked = u; } });
+  const { plugin } = await setup(route, undefined, { ...externalSettings, externalNoMaster: "true" });
+  const audio = await plugin.stream({ id: "347230", quality: "lossless" });
+  assert.match(asked, /quality=flac/);
+  assert.equal(audio.type, "flac");
+  assert.equal(audio.quality, "lossless");
+});
+
+test("saving a playlist uses the subscribe endpoints", async () => {
+  const calls = [];
+  const { plugin } = await setup(async (url, init) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    calls.push({ path: new URL(url).pathname, form: new URLSearchParams(init.body) });
+    return response({ code: 200 });
+  }, { cookies: { MUSIC_U: "synthetic-session", __csrf: "fixture-csrf" }, profile: null });
+  await plugin.savePlaylist({ id: "9", on: true });
+  assert.deepEqual([calls[0].path, calls[0].form.get("id")], ["/api/playlist/subscribe", "9"]);
+  await plugin.savePlaylist({ id: "9", on: false });
+  assert.equal(calls[1].path, "/api/playlist/unsubscribe");
+  assert.equal(calls[1].form.get("csrf_token"), "fixture-csrf");
+});
+
+// Playback reporting must not throw: a failed report cannot interrupt the song.
+test("played reports the start of a song to the client log host only when signed in", async () => {
+  const seen = [];
+  const { plugin } = await setup(async (url, init) => {
+    seen.push({ url, body: decode(init.body) });
+    return response({ code: 200 });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  await plugin.played({ id: "5" });
+  assert.equal(seen[0].url, "https://clientlog.music.163.com/eapi/feedback/weblog");
+  assert.equal(seen[0].body.path, "/api/feedback/weblog");
+  const logs = JSON.parse(seen[0].body.data.logs);
+  assert.equal(logs[0].action, "startplay");
+  assert.equal(logs[0].json.id, "5");
+  assert.equal(seen[0].body.data.header.os, "osx");
+
+  await plugin.played({ id: "program:7:8" });
+  assert.equal(seen.length, 1, "没有音频的节目不上报");
+
+  const { plugin: guest } = await setup(async () => { throw new Error("guest must not report"); });
+  await guest.played({ id: "5" });
+
+  const { plugin: failing } = await setup(async () => response({ code: 500 }), { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  await failing.played({ id: "5" });
+});
+
 
 
 

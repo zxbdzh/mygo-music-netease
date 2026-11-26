@@ -5,6 +5,8 @@
 
 const SITE = "https://music.163.com";
 const EAPI = "https://interfacepc.music.163.com";
+// 播放记录上报走客户端日志域名，不用播放接口所在的主机。
+const CLIENT_LOG = "https://clientlog.music.163.com";
 // Protocol key shared by the upstream client, not a user's credential.
 const EAPI_KEY = "e82ckenh8dichen8";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
@@ -162,7 +164,7 @@ async function request(path, params = {}, options = {}) {
     const text = JSON.stringify({ ...params, header, e_r: false });
     const digest = host.crypto.md5(`nobody${path}use${text}md5forencrypt`);
     const encrypted = host.crypto.aesEcbEncrypt(EAPI_KEY, `${path}-36cd479b6b5-${text}-36cd479b6b5-${digest}`);
-    url = EAPI + path.replace(/^\/api\//, "/eapi/");
+    url = (options.eapiHost || EAPI) + path.replace(/^\/api\//, "/eapi/");
     init.method = "POST";
     init.body = `params=${encrypted.toUpperCase()}`;
     headers["Content-Type"] = "application/x-www-form-urlencoded";
@@ -885,6 +887,34 @@ export async function savedAlbums({ offset = 0 } = {}) {
   return { albums: data.albums.map(toAlbum), more: !!data.hasMore };
 }
 
+export async function savePlaylist({ id, on }) {
+  const pid = String(Number(idOf(id)));
+  const { activeSession, generation } = await startWrite();
+  await writeForm(`/api/playlist/${on ? "subscribe" : "unsubscribe"}`, new URLSearchParams({ id: pid }), activeSession, generation);
+}
+
+// 只上报「开始播放」，让最近播放跟着更新；收听时长拿不到，因此不动排行计数。
+export async function played({ id }) {
+  const identity = trackIdentity(id);
+  if (identity.program) return;
+  const activeSession = currentSession();
+  if (!activeSession.cookies.MUSIC_U) return;
+  const generation = epoch;
+  const logs = JSON.stringify([{
+    action: "startplay",
+    json: { id: identity.audio, type: "song", mainsite: "1", mainsiteWeb: "1", content: `id=${identity.audio}` },
+  }]);
+  // os=osx 是客户端标识；用会话副本避免把它带进其他请求或持久化。
+  const clientSession = { ...activeSession, cookies: { ...activeSession.cookies, os: "osx" } };
+  try {
+    await eapi("/api/feedback/weblog", { logs }, { session: clientSession, keepSession: true, eapiHost: CLIENT_LOG });
+    if (generation !== epoch) return;
+  } catch (error) {
+    // 上报失败不该打断播放，也不该把用户推到登录页。
+    try { console.warn(`playback report skipped: ${error?.code || "failure"}`); } catch { /* 同上。 */ }
+  }
+}
+
 export async function comments({ trackId, offset = 0 }) {
   const identity = trackIdentity(trackId);
   offset = pageOffset(offset);
@@ -1068,22 +1098,36 @@ const EXTERNAL_SCRIPT_TIMEOUT = 5000;
 const EXTERNAL_MUSIC_TIMEOUT = 8000;
 const EXTERNAL_SCRIPT_LIMIT = 262144;
 const EXTERNAL_UA = "lx-music-desktop/2.99.0";
-const EXTERNAL_QUALITY = { standard: "128k", high: "320k", lossless: "master" };
+const QUALITY_ORDER = ["standard", "high", "lossless"];
+
+// LX 脚本的音质档位：关掉「最高音质」时无损只请求普通无损，不请求 24bit。
+function externalQuality(quality) {
+  if (quality === "lossless") return settingValue("externalNoMaster") === "true" ? "flac" : "master";
+  return quality === "standard" ? "128k" : "320k";
+}
 const EXTERNAL_IPV4 = /^(?:0\.|10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/;
 const EXTERNAL_IPV6 = /^(?:\[::1?\]$|\[::ffff:|\[f[cd][0-9a-f]{0,2}:)/i;
 
-function externalSetting(key) {
+function settingValue(key) {
   // 旧宿主没有 settings API 时必须视为未配置，播放不能被配置读取卡住。
   try { return String(host.setting(key) ?? ""); } catch { return ""; }
 }
 
+// 用户设置的档位是上限，既不抬高档位，也不因为没设置就改变宿主的选择。
+function cappedQuality(quality) {
+  const limit = QUALITY_ORDER.indexOf(settingValue("qualityCeiling"));
+  if (limit < 0) return quality;
+  const index = QUALITY_ORDER.indexOf(quality);
+  return index < 0 ? QUALITY_ORDER[limit] : QUALITY_ORDER[Math.min(index, limit)];
+}
+
 function externalSourceOn() {
-  return externalSetting("externalSourceEnabled") === "true";
+  return settingValue("externalSourceEnabled") === "true";
 }
 
 function externalScriptURL() {
-  if (externalSetting("externalSourceEnabled") !== "true") return null;
-  const script = externalSetting("externalSourceScript");
+  if (settingValue("externalSourceEnabled") !== "true") return null;
+  const script = settingValue("externalSourceScript");
   return /^https:\/\/\S+$/.test(script) ? script : null;
 }
 
@@ -1169,7 +1213,7 @@ async function externalResolve(entry, id, quality) {
   const target = new URL(entry.apiUrl.replace(/\/+$/, "") + "/music/url");
   target.searchParams.set("source", EXTERNAL_SOURCE);
   target.searchParams.set("songId", id);
-  target.searchParams.set("quality", EXTERNAL_QUALITY[quality] || EXTERNAL_QUALITY.high);
+  target.searchParams.set("quality", externalQuality(quality));
   const headers = { "User-Agent": EXTERNAL_UA, "Content-Type": "application/json" };
   if (entry.key) headers["X-API-Key"] = entry.key;
   const controller = new AbortController();
@@ -1211,6 +1255,7 @@ async function externalStream(id, quality) {
 export async function stream({ id, quality = "high" }) {
   id = trackIdentity(id).audio;
   if (!id) throw fail("unavailable", "该播客节目没有可播放的音频");
+  quality = cappedQuality(quality);
   const external = await externalStream(id, quality);
   if (external) return external;
   const generation = epoch;

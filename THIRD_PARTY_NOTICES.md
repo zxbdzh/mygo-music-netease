@@ -55,6 +55,15 @@ follow the public NetEase API documentation (`/api/playlist/create`,
 `/api/search/suggest/web`), all sent over the same web session and csrf token
 the existing playlist edits use.
 
+Saving a playlist (`/api/playlist/subscribe|unsubscribe`) and reporting the
+start of playback (`/api/feedback/weblog` on the client log host, with `os=osx`
+on a copy of the session) were added the same day. Only the `startplay` record
+is sent: the host gives no elapsed time, so no listening count is invented.
+
+The quality ceiling setting and the external source's plain-lossless switch are
+this fork's own; they only choose which level is requested and do not change any
+protocol.
+
 Heart mode ("心动模式") is adapted from `HeartMode` in
 `internal/netease/radio.go` at the same preserved upstream commit. Its request
 uses NetEase's intelligence endpoint, seeded from the account's liked playlist;

@@ -1,7 +1,7 @@
 {
   "id": "netease",
   "name": "网易云音乐",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "minAppVersion": "0.1.21",
   "main": "index.js",
   "playback": "stream",
@@ -9,6 +9,18 @@
     "network": ["*"]
   },
   "settings": [
+    {
+      "key": "qualityCeiling",
+      "label": "最高音质",
+      "type": "select",
+      "options": [
+        { "value": "", "label": "跟随播放器" },
+        { "value": "standard", "label": "标准" },
+        { "value": "high", "label": "高音质" },
+        { "value": "lossless", "label": "无损" }
+      ],
+      "help": "限制请求的最高档位；播放器要求更高时降到所选档位，要求更低时保持原样。"
+    },
     {
       "key": "externalSourceEnabled",
       "label": "使用外部音源",
@@ -19,6 +31,12 @@
       "key": "externalSourceScript",
       "label": "LX 音源脚本地址",
       "help": "填完整的 LX 脚本地址，必须以 https:// 开头，例如 https://source.shiqianjiang.cn/api/script/lx?key=…。只读取脚本声明的接口，不执行脚本。"
+    },
+    {
+      "key": "externalNoMaster",
+      "label": "无损档不请求最高音质",
+      "type": "boolean",
+      "help": "开启后，外部音源在无损档只取普通无损，不再请求 24bit 高解析，省流量也省缓冲时间；对官方播放没有影响。"
     }
   ],
   "navigation": [
