@@ -22,6 +22,12 @@ Host API reference: https://github.com/egoist/mygo-music at
 README, `examples/demo-plugin`, `internal/music/music.go`, and `internal/plugin`.
 The host itself is licensed under AGPL-3.0 and is distributed separately.
 
+The plugin icon (`icon.png`) is the NetEase Cloud Music app icon, taken from the
+official App Store listing (`com.netease.cloudmusic`) at 512 pixels and scaled
+to 256. It is a trademark of NetEase and is included here so the plugin is
+recognisable to its own users; the AGPL-3.0 license does not extend to it, and
+it is not a claim of any affiliation with or endorsement by NetEase.
+
 NetEase Cloud Music names and content belong to their respective owners. This
 project is not an official NetEase or MyGo Music release. The license covers
 this plugin's source, not music content or service access rights.
