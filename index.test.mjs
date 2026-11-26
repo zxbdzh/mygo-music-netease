@@ -1138,3 +1138,138 @@ test("comment likes and posts ask a guest to sign in before any write", async ()
   assert.equal(wrote, 0);
 });
 
+// Playlist management reuses the web session and csrf; reordering submits the
+// whole id list to the same endpoint the add/remove calls use.
+test("playlist create, rename, delete and reorder use their own endpoints", async () => {
+  const calls = [];
+  const { plugin } = await setup(async (url, init) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    if (url.includes("playlist/detail")) {
+      return response({ code: 200, playlist: { id: 21, trackCount: 3, trackIds: [{ id: 1 }, { id: 2 }, { id: 3 }] } });
+    }
+    const path = new URL(url).pathname;
+    calls.push({ path, form: new URLSearchParams(init.body) });
+    if (path.endsWith("/playlist/create")) {
+      return response({ code: 200, id: 31, playlist: { id: 31, name: "New", creator: { userId: 8 } } });
+    }
+    return response({ code: 200 });
+  }, { cookies: { MUSIC_U: "synthetic-session", __csrf: "fixture-csrf" }, profile: null });
+
+  const created = await plugin.createPlaylist({ name: "  New  " });
+  assert.equal(created.id, "31");
+  assert.equal(created.name, "New");
+  assert.equal(created.mine, true);
+  assert.equal(calls[0].path, "/api/playlist/create");
+  assert.equal(calls[0].form.get("name"), "New");
+  assert.equal(calls[0].form.get("csrf_token"), "fixture-csrf");
+
+  await plugin.renamePlaylist({ id: "21", name: "Renamed" });
+  assert.equal(calls[1].path, "/api/playlist/update/name");
+  assert.equal(calls[1].form.get("id"), "21");
+  assert.equal(calls[1].form.get("name"), "Renamed");
+
+  await plugin.deletePlaylist({ id: "21" });
+  assert.equal(calls[2].path, "/api/playlist/remove");
+  assert.equal(calls[2].form.get("ids"), "[21]");
+
+  await plugin.movePlaylistTrack({ id: "21", from: 2, to: 0 });
+  assert.equal(calls[3].path, "/api/playlist/manipulate/tracks");
+  assert.equal(calls[3].form.get("op"), "update");
+  assert.equal(calls[3].form.get("pid"), "21");
+  assert.equal(calls[3].form.get("trackIds"), "[3,1,2]");
+
+  await assert.rejects(plugin.movePlaylistTrack({ id: "21", from: 9, to: 0 }), /位置/);
+  await assert.rejects(plugin.createPlaylist({ name: "   " }), /不能为空/);
+  assert.equal(calls.length, 4);
+});
+
+test("playlist management asks a guest to sign in before any write", async () => {
+  let wrote = 0;
+  const { plugin } = await setup(async (url) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: null });
+    wrote++;
+    return response({ code: 200 });
+  });
+  for (const call of [
+    () => plugin.createPlaylist({ name: "New" }),
+    () => plugin.renamePlaylist({ id: "21", name: "Renamed" }),
+    () => plugin.deletePlaylist({ id: "21" }),
+    () => plugin.movePlaylistTrack({ id: "21", from: 0, to: 1 }),
+  ]) await assert.rejects(call(), { code: "signIn" });
+  assert.equal(wrote, 0);
+});
+
+// Saving, following and subscribing each have their own path and field names.
+test("album, artist and show subscriptions use their own payload fields", async () => {
+  const calls = [];
+  const { plugin } = await setup(async (url, init) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    calls.push({ path: new URL(url).pathname, form: new URLSearchParams(init.body) });
+    return response({ code: 200 });
+  }, { cookies: { MUSIC_U: "synthetic-session", __csrf: "fixture-csrf" }, profile: null });
+
+  await plugin.saveAlbum({ id: "6", on: true });
+  assert.deepEqual([calls[0].path, calls[0].form.get("id")], ["/api/album/sub", "6"]);
+  await plugin.saveAlbum({ id: "6", on: false });
+  assert.equal(calls[1].path, "/api/album/unsub");
+  await plugin.followArtist({ id: "5", on: true });
+  assert.deepEqual([calls[2].path, calls[2].form.get("artistId"), calls[2].form.get("artistIds")],
+    ["/api/artist/sub", "5", "[5]"]);
+  await plugin.followArtist({ id: "5", on: false });
+  assert.equal(calls[3].path, "/api/artist/unsub");
+  await plugin.subscribeShow({ id: "8", on: true });
+  assert.deepEqual([calls[4].path, calls[4].form.get("id")], ["/api/djradio/sub", "8"]);
+  await plugin.subscribeShow({ id: "8", on: false });
+  assert.equal(calls[5].path, "/api/djradio/unsub");
+  assert.equal(calls[5].form.get("csrf_token"), "fixture-csrf");
+});
+
+test("saved albums page maps the collection and reports more", async () => {
+  const queried = [];
+  const { plugin } = await setup(async (url) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    const query = new URL(url).searchParams;
+    queried.push(query);
+    return response({ code: 200, hasMore: true, albums: [{ id: 6, name: "Album", picUrl: "https://p1.music.126.net/a.jpg" }] });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+
+  const page = await plugin.savedAlbums({ offset: 30 });
+  assert.equal(page.albums[0].id, "6");
+  assert.equal(page.more, true);
+  assert.equal(queried[0].get("offset"), "30");
+  assert.equal(queried[0].get("limit"), "30");
+  assert.equal(queried[0].get("total"), "true");
+
+  const { plugin: guest } = await setup(async () => response({ code: 200, profile: null }));
+  await assert.rejects(guest.savedAlbums({ offset: 0 }), { code: "signIn" });
+});
+
+test("search suggestions stay plain strings and skip an empty query", async () => {
+  let calls = 0;
+  const { plugin } = await setup(async (url) => {
+    calls++;
+    assert.equal(new URL(url).searchParams.get("s"), "Fixture");
+    return response({ code: 200, result: { allMatch: [{ keyword: "Fixture" }, {}, { keyword: "Fixture2" }] } });
+  });
+  assert.deepEqual(await plugin.suggest({ query: "  Fixture  " }), ["Fixture", "Fixture2"]);
+  assert.deepEqual(await plugin.suggest({ query: "   " }), []);
+  assert.equal(calls, 1);
+});
+
+test("recent playback uses the weekly record list without a page wrapper", async () => {
+  const { plugin } = await setup(async (url) => {
+    if (url.includes("account/get")) return response({ code: 200, profile: { userId: 8, nickname: "Fixture" } });
+    const query = new URL(url).searchParams;
+    assert.equal(query.get("uid"), "8");
+    assert.equal(query.get("type"), "1");
+    return response({ code: 200, weekData: [{ playCount: 3, song: song(2) }, { playCount: 1 }, { playCount: 2, song: song(1) }] });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  assert.deepEqual((await plugin.recent()).map(track => track.id), ["2", "1"]);
+
+  const { plugin: guest } = await setup(async () => response({ code: 200, profile: null }));
+  await assert.rejects(guest.recent(), { code: "signIn" });
+});
+
+
+
+

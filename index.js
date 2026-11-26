@@ -427,6 +427,15 @@ export async function search({ query, kind = "tracks", offset = 0 }) {
   return { [kind]: records.map(type[3]), more: items.length > 0 && offset + items.length < (result[type[2]] || 0) };
 }
 
+// 补全只要关键词，且访客也能用。
+export async function suggest({ query }) {
+  const keyword = String(query ?? "").trim();
+  if (!keyword) return [];
+  const data = await request("/api/search/suggest/web", { s: keyword });
+  const matches = data.result?.allMatch;
+  return Array.isArray(matches) ? matches.map((item) => item?.keyword).filter(Boolean) : [];
+}
+
 async function discoveryPlaylists() {
   const data = await request("/api/personalized/playlist", { limit: 24 });
   const playlists = (data.result || []).map(toPlaylist);
@@ -474,6 +483,18 @@ export async function home() {
   };
 }
 
+// 听歌记录被「最近播放」和两个排行页共用，只差 type。
+async function recordTracks(profile, week) {
+  const data = await request("/api/v1/play/record", { uid: profile.id, type: week ? 1 : 0 }, { keepSession: true });
+  const entries = data[week ? "weekData" : "allData"];
+  if (!Array.isArray(entries)) throw new Error("网易云未返回有效的听歌排行");
+  return entries.filter(item => item.song?.id).map(item => toTrack(item.song));
+}
+
+export async function recent() {
+  return recordTracks(await requireAccount(), true);
+}
+
 export async function browse({ page }) {
   if (/^cloud:\d+$/.test(page)) {
     await requireAccount();
@@ -493,10 +514,7 @@ export async function browse({ page }) {
   if (page === "record:week" || page === "record:all") {
     const profile = await requireAccount();
     const week = page === "record:week";
-    const data = await request("/api/v1/play/record", { uid: profile.id, type: week ? 1 : 0 }, { keepSession: true });
-    const entries = data[week ? "weekData" : "allData"];
-    if (!Array.isArray(entries)) throw new Error("网易云未返回有效的听歌排行");
-    return { title: week ? "最近一周 · 听歌排行" : "所有时间 · 听歌排行", sections: [{ tracks: entries.filter(item => item.song?.id).map(item => toTrack(item.song)), empty: "暂无听歌记录" }] };
+    return { title: week ? "最近一周 · 听歌排行" : "所有时间 · 听歌排行", sections: [{ tracks: await recordTracks(profile, week), empty: "暂无听歌记录" }] };
   }
   if (page === "discovery") {
     return { title: "推荐歌单", sections: [{ playlists: await discoveryPlaylists(), empty: "暂时没有推荐歌单" }] };
@@ -768,6 +786,103 @@ export async function addToPlaylist({ id, trackIds }) {
 
 export async function removeFromPlaylist({ id, trackIds }) {
   await manipulatePlaylistTracks("del", id, trackIds);
+}
+
+// 歌单管理与收藏共用的 web 写请求：同一会话、同一 csrf。
+async function writeForm(path, form, activeSession, generation) {
+  if (activeSession.cookies.__csrf) form.set("csrf_token", activeSession.cookies.__csrf);
+  const data = await request(path, {}, { session: activeSession, form: form.toString(), keepSession: true });
+  checkAccountSession(activeSession, generation);
+  return data;
+}
+
+async function startWrite() {
+  const activeSession = currentSession();
+  const generation = epoch;
+  await requireAccount();
+  checkAccountSession(activeSession, generation);
+  return { activeSession, generation };
+}
+
+function playlistTitle(name) {
+  const title = String(name ?? "").trim();
+  if (!title) throw new Error("歌单名不能为空");
+  return title;
+}
+
+export async function createPlaylist({ name }) {
+  const title = playlistTitle(name);
+  const { activeSession, generation } = await startWrite();
+  const form = new URLSearchParams({ name: title, privacy: "0", type: "NORMAL" });
+  const data = await writeForm("/api/playlist/create", form, activeSession, generation);
+  const id = data.playlist?.id ?? data.id;
+  if (!id) throw new Error("网易云未返回新建的歌单，请刷新后查看");
+  return toPlaylist(data.playlist || { id, name: title, creator: { userId: session.profile?.id } });
+}
+
+export async function renamePlaylist({ id, name }) {
+  const title = playlistTitle(name);
+  const { activeSession, generation } = await startWrite();
+  const form = new URLSearchParams({ id: String(Number(idOf(id))), name: title });
+  await writeForm("/api/playlist/update/name", form, activeSession, generation);
+}
+
+export async function deletePlaylist({ id }) {
+  const pid = String(Number(idOf(id)));
+  const { activeSession, generation } = await startWrite();
+  const form = new URLSearchParams({ ids: `[${pid}]` });
+  await writeForm("/api/playlist/remove", form, activeSession, generation);
+}
+
+export async function movePlaylistTrack({ id, from, to }) {
+  const pid = String(Number(idOf(id)));
+  const { activeSession, generation } = await startWrite();
+  // 调整顺序必须提交完整列表，否则服务端会丢掉未包含的歌曲。
+  const ids = [...await playlistTrackIDs(pid, activeSession, generation)];
+  const fromIndex = Number(from);
+  const toIndex = Number(to);
+  if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) ||
+      fromIndex < 0 || toIndex < 0 || fromIndex >= ids.length || toIndex >= ids.length) {
+    throw new Error("无效的歌曲位置，请刷新歌单后重试");
+  }
+  if (fromIndex === toIndex) return;
+  const [moved] = ids.splice(fromIndex, 1);
+  ids.splice(toIndex, 0, moved);
+  const form = new URLSearchParams({ op: "update", pid, trackIds: JSON.stringify(ids.map(Number)) });
+  await writeForm("/api/playlist/manipulate/tracks", form, activeSession, generation);
+}
+
+// 收藏、关注与订阅各自使用不同的字段名，不能互相套用。
+export async function saveAlbum({ id, on }) {
+  const album = String(Number(idOf(id)));
+  const { activeSession, generation } = await startWrite();
+  await writeForm(`/api/album/${on ? "sub" : "unsub"}`, new URLSearchParams({ id: album }), activeSession, generation);
+}
+
+export async function followArtist({ id, on }) {
+  const artist = String(Number(idOf(id)));
+  const { activeSession, generation } = await startWrite();
+  const form = new URLSearchParams({ artistId: artist, artistIds: `[${artist}]` });
+  await writeForm(`/api/artist/${on ? "sub" : "unsub"}`, form, activeSession, generation);
+}
+
+export async function subscribeShow({ id, on }) {
+  const show = String(Number(idOf(id)));
+  const { activeSession, generation } = await startWrite();
+  await writeForm(`/api/djradio/${on ? "sub" : "unsub"}`, new URLSearchParams({ id: show }), activeSession, generation);
+}
+
+export async function savedAlbums({ offset = 0 } = {}) {
+  const activeSession = currentSession();
+  const generation = epoch;
+  await requireAccount();
+  checkAccountSession(activeSession, generation);
+  const data = await request("/api/album/sublist", { limit: PAGE_SIZE, offset: pageOffset(offset), total: "true" }, {
+    session: activeSession, keepSession: true,
+  });
+  checkAccountSession(activeSession, generation);
+  if (!Array.isArray(data.albums)) throw new Error("网易云未返回有效的专辑收藏");
+  return { albums: data.albums.map(toAlbum), more: !!data.hasMore };
 }
 
 export async function comments({ trackId, offset = 0 }) {

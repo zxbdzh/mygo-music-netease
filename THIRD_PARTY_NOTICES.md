@@ -46,6 +46,15 @@ read-only pages. The thread id, the web like endpoint with its csrf token and
 the desktop publish endpoint follow the same paths the upstream client and the
 public NetEase API documentation use.
 
+Playlist management (create, rename, delete, reorder), saving albums, following
+artists, subscribing to shows, the saved albums page, search suggestions and
+recent playback were added on 2026-11-26. Their paths and payload field names
+follow the public NetEase API documentation (`/api/playlist/create`,
+`/update/name`, `/remove`, `/manipulate/tracks` with `op=update`,
+`/api/album/sub|unsub|sublist`, `/api/artist/sub|unsub`, `/api/djradio/sub|unsub`,
+`/api/search/suggest/web`), all sent over the same web session and csrf token
+the existing playlist edits use.
+
 Heart mode ("心动模式") is adapted from `HeartMode` in
 `internal/netease/radio.go` at the same preserved upstream commit. Its request
 uses NetEase's intelligence endpoint, seeded from the account's liked playlist;
