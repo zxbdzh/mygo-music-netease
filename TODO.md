@@ -6,6 +6,8 @@
 - 结果：隔离修复index.js中响应已完成、外层调用尚未恢复时退出登录仍返回旧音源的竞态；所有共享请求等待者返回前检查epoch。index.test.mjs增加完成时退出和共享失败清理回归，14项相关检查通过；真实moejs合成回归原版失败、修复版通过。没有真实网络或账号操作，不涉及UA/风控，不声称修复460。
 - 发布：准备v0.1.13；只含独立竞态修复，PR26不包含在内。
 
+- [x] 2026-11-26 16:35 +0800 · DSH（Codeg / Windows）· 用户“那算了，你别乱改，没有就没有”并选择撤回：回退 0.3.8 给首页「我的音乐」三张卡临时加的推荐歌单封面，漫游卡封面索引回到 +3，删除对应测试。72 项测试通过，已发布 v0.3.9（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.9 ），资产 SHA-256 与本地一致。经验：视觉层面的“补充”要先问再做，不要用语义不符的图占位。
+
 - [x] 2026-11-26 16:32 +0800 · DSH（Codeg / Windows）· 用户截图“怎么没封面”：首页「我的音乐」三张卡（最近一周/所有时间/音乐云盘）此前只有 title/subtitle 没有 imageUrl，宿主显示占位音符。沿用推荐歌单封面作装饰图，并把漫游卡封面索引从 +3 改为 +8 避免重复；补断言覆盖首页六张卡片封面齐全、互不重复且与漫游卡不同。73 项测试通过，已发布 v0.3.8（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.8 ），资产 SHA-256 与本地一致。封面取自推荐歌单，语义上只是装饰，未做专用配图。
 
 - [x] 2026-11-26 16:29 +0800 · DSH（Codeg / Windows）· 用户截图「我收藏的专辑」加载失败：错误文案来自本地兜底，说明接口回了 code=200 但无 `albums` 字段。改为表单 POST（与社区 weapi 版同语义，带 csrf），列表兼容顶层 `albums` 与 `data.albums`，取不到时把响应字段名带进错误便于定位。72 项测试通过，已发布 v0.3.7（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.7 ），资产 SHA-256 与本地一致、ZIP 6 个文件。同类风险仍在：saveAlbum/followArtist/subscribeShow/savePlaylist 也走明文；真实账号是否生效未验收。
