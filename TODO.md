@@ -6,6 +6,8 @@
 - 结果：隔离修复index.js中响应已完成、外层调用尚未恢复时退出登录仍返回旧音源的竞态；所有共享请求等待者返回前检查epoch。index.test.mjs增加完成时退出和共享失败清理回归，14项相关检查通过；真实moejs合成回归原版失败、修复版通过。没有真实网络或账号操作，不涉及UA/风控，不声称修复460。
 - 发布：准备v0.1.13；只含独立竞态修复，PR26不包含在内。
 
+- [x] 2026-11-26 16:25 +0800 · DSH（Codeg / Windows）· 用户指出“图标不是换了吗”：查证 git 全历史无任何图片文件、plugin.json 从未有 icon 字段（历史命中的是侧栏 `"icon": "chart"`），截图里是宿主对无图标插件显示仓库 owner 头像的兜底。按用户选择改用网易云音乐官方 App 图标（App Store `com.netease.cloudmusic` 的 512px 图，缩放 256），新增 icon.png、plugin.json 声明 icon，并修正 pack.py 只打 5 个文件导致 ZIP 漏图的问题；商标归属写入 THIRD_PARTY_NOTICES。72 项测试通过，已发布 v0.3.6（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.6 ），远端 ZIP 含 icon.png 且 SHA-256 与本地一致。图标显示需宿主 ≥0.1.26，未在桌面实机确认。
+
 - [x] 2026-11-26 16:17 +0800 · DSH（Codeg / Windows）· 用户“你直接发版我测试下”：合并 0.3.3–0.3.5 三个提交发布 v0.3.5（https://github.com/zxbdzh/mygo-music-netease/releases/tag/v0.3.5 ）。包含评论点赞与发表、歌单新建/改名/删除/排序、收藏歌单、收藏专辑/关注歌手/订阅播客、我收藏的专辑页、搜索建议、最近播放、播放开始上报、最高音质上限与外源「无损档不请求最高音质」。72 项测试、`node --check`、ZIP 五文件与版本核对通过，Release 资产 SHA-256 与本地 b912e777…74a2 一致。真实账号的写操作（收藏歌单、删除歌单、订阅）与播放上报是否被服务端接受均未验收；`savePlaylist` 未实现 checkToken 反作弊头，失败会返回服务端错误码。
 
 - [x] 2026-11-26 16:00 +0800 · DSH（Codeg / Windows）· 按“宿主能做插件没导出的都看下能不能实现”调研 459 个社区模块后分档：A 档 10 个可低风险实现并已全部完成；B 档 2 个（savePlaylist 需 checkToken、played 需 clientlog 域与 os=osx）已实现但待真机验证；C 档 likeEpisode 因社区无接口路径暂不做。改动见 14a8e21 与 0e2da41。
