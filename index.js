@@ -924,6 +924,42 @@ export async function played({ id }) {
   }
 }
 
+// 只上报有效播放：播完，或听过整曲的八成；不足门槛的切歌只留 played 的开播记录。
+export async function stopped({ id, heard, duration, finished }) {
+  const identity = trackIdentity(id);
+  if (identity.program) return;
+  // 不足八成又没有播完的，不进入听歌排行。
+  if (!finished && !(duration > 0 && heard >= duration * 4 / 5)) return;
+  const activeSession = currentSession();
+  if (!activeSession.cookies.MUSIC_U) return;
+  const generation = epoch;
+  const seconds = Math.max(1, Math.round((heard || 0) / 1000));
+  const logs = JSON.stringify([{
+    action: "play",
+    json: {
+      id: identity.audio,
+      type: "song",
+      mainsite: "1",
+      mainsiteWeb: "1",
+      content: `id=${identity.audio}`,
+      time: seconds,
+      end: finished ? "playend" : "interrupt",
+      source: "list",
+      wifi: "0",
+      download: "0",
+    },
+  }]);
+  // 与开播上报一样，os=osx 只放在这次请求的会话副本里。
+  const clientSession = { ...activeSession, cookies: { ...activeSession.cookies, os: "osx" } };
+  try {
+    await eapi("/api/feedback/weblog", { logs }, { session: clientSession, keepSession: true, eapiHost: CLIENT_LOG });
+    if (generation !== epoch) return;
+  } catch (error) {
+    // 上报失败不该打断播放，也不该把用户推到登录页。
+    try { console.warn(`playback finish report skipped: ${error?.code || "failure"}`); } catch { /* 同上。 */ }
+  }
+}
+
 export async function comments({ trackId, offset = 0 }) {
   const identity = trackIdentity(trackId);
   offset = pageOffset(offset);

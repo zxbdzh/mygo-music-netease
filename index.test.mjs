@@ -1426,6 +1426,48 @@ test("played reports the start of a song to the client log host only when signed
   await failing.played({ id: "5" });
 });
 
+// Only a play that finished or got most of the way counts; a skip leaves the start play alone.
+test("stopped reports a play that finished or ran most of the way", async () => {
+  const seen = [];
+  const { plugin } = await setup(async (url, init) => {
+    seen.push({ url, body: decode(init.body) });
+    return response({ code: 200 });
+  }, { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+
+  await plugin.stopped({ id: "5", heard: 200000, duration: 200000, finished: true });
+  assert.equal(seen[0].url, "https://clientlog.music.163.com/eapi/feedback/weblog");
+  assert.equal(seen[0].body.path, "/api/feedback/weblog");
+  let logs = JSON.parse(seen[0].body.data.logs);
+  assert.equal(logs[0].action, "play");
+  assert.equal(logs[0].json.id, "5");
+  assert.equal(logs[0].json.time, 200);
+  assert.equal(logs[0].json.end, "playend");
+  assert.equal(seen[0].body.data.header.os, "osx");
+
+  // 听过八成算有效播放，结束原因是被打断。
+  await plugin.stopped({ id: "5", heard: 160000, duration: 200000, finished: false });
+  logs = JSON.parse(seen[1].body.data.logs);
+  assert.equal(logs[0].json.end, "interrupt");
+
+  // 不足八成又没有播完：只留下 played 的开播记录。
+  await plugin.stopped({ id: "5", heard: 30000, duration: 200000, finished: false });
+  assert.equal(seen.length, 2, "未达有效播放门槛");
+
+  // 节目没有音频 ID。
+  await plugin.stopped({ id: "program:7:8", heard: 200000, duration: 200000, finished: true });
+  assert.equal(seen.length, 2, "没有音频的节目不上报");
+
+  // 时长未知时无法按比例判断，只有播完才算。
+  await plugin.stopped({ id: "5", heard: 10000, duration: 0, finished: false });
+  assert.equal(seen.length, 2, "时长未知时按未完成处理");
+
+  const { plugin: guest } = await setup(async () => { throw new Error("guest must not report"); });
+  await guest.stopped({ id: "5", heard: 200000, duration: 200000, finished: true });
+
+  const { plugin: failing } = await setup(async () => response({ code: 500 }), { cookies: { MUSIC_U: "synthetic-session" }, profile: null });
+  await failing.stopped({ id: "5", heard: 200000, duration: 200000, finished: true });
+});
+
 
 
 
